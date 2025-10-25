@@ -27,7 +27,7 @@ Evolve Bot was built with clarity, simplicity, and safety in mind.
 - Ensures users are adults before interaction  
 - Filters unsafe, illegal, or explicit content  
 - Produces warm, fluent, and engaging replies  
-- Adapts to various roles — from companion to customer service bot  
+- Adapts to various roles from companion to customer service bot  
 
 It’s a framework that evolves with your creativity flexible enough for fun or professional use.
 
@@ -47,4 +47,4 @@ All data is stored locally in SQLite. The project is fully self-contained and ea
 ---
 
 ## Quote
-> “Evolve Bot — safe, simple, and built for real conversation.”
+> “Evolve Bot — safe, simple and built for real conversation.”
