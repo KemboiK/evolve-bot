@@ -36,7 +36,7 @@ PAGE_TEMPLATE = """
     </style>
 </head>
 <body>
-    <h1>🧠 Evolve Bot Dashboard</h1>
+    <h1> Evolve Bot Dashboard</h1>
     <p>Click a task to simulate watching, reading, or completing.</p>
     {% for t in tasks %}
         <div class="task">

@@ -2,12 +2,12 @@
 Evolve Bot - starter single-file chatbot (Flask)
 
 What it is:
-- A minimal, extensible chatbot server that can be used to respond to clients in a conversational/erotic-role format.
-- Contains safe-guards, templates, logging, session handling, reply variability, and placeholders to plug an LLM (OpenAI or other).
+- A minimal, extensible chatbot server that can be used to respond to clients in a conversational format.
+- Contains safe-guards, templates, logging, session handling, reply variability and placeholders to plug an LLM (OpenAI or other).
 
-Important ethical & safety notes (read first):
-- This code includes explicit checks and logging for safety. If you plan to use it for adult/erotic chat:
-  1) ALWAYS verify age and consent of users. Do not chat erotically with minors.
+Important ethical & safety notes:
+- This code includes logging for safety:
+  1) ALWAYS verify age and consent of users.
   2) Respect local laws and platform terms. Do not impersonate people where prohibited.
   3) Consider adding human moderation and opt-out reporting.
 
@@ -62,7 +62,7 @@ def log_message(session_id, role, content):
     conn.commit()
     conn.close()
 
-# simple age-check placeholder - **MUST** be replaced by a proper age verification system in production
+# simple age-check placeholder - to be replaced by a proper age verification system in production
 def check_age_claim(age_str):
     try:
         age = int(age_str)
