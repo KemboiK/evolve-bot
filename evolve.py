@@ -1,24 +1,19 @@
 """
-Evolve Bot - starter single-file chatbot (Flask)
+Evolve Learning Bot (Flask)
+---------------------------
 
-What it is:
-- A minimal, extensible chatbot server that can be used to respond to clients in a conversational format.
-- Contains safe-guards, templates, logging, session handling, reply variability and placeholders to plug an LLM (OpenAI or other).
+Purpose:
+- Conversational assistant that helps manage and complete learning tasks.
+- Can talk naturally, log all messages, and trigger your local dashboard tasks.
+- Modular, safe, and extendable with LLM or external APIs.
 
-Important ethical & safety notes:
-- This code includes logging for safety:
-  1) ALWAYS verify age and consent of users.
-  2) Respect local laws and platform terms. Do not impersonate people where prohibited.
-  3) Consider adding human moderation and opt-out reporting.
+How it works:
+- Listens to chat input from the user.
+- Detects keywords for tasks like “Python Basics” or “AI Intro”.
+- Calls the dashboard (running separately on localhost) to simulate the task.
+- Replies with confirmation and encouragement messages.
 
-How to run:
-- python3 -m venv venv && source venv/bin/activate
-- pip install flask sqlalchemy jinja2 python-dotenv requests
-- export/put OPENAI_API_KEY (optional) in .env
-- python evolve-bot-starter.py
-
-This file intentionally keeps the LLM call optional and uses a deterministic template fallback,
-so you can test the bot without any paid API.
+Run this separately from evolve_dashboard.py
 """
 
 from flask import Flask, request, jsonify, session, render_template_string
@@ -27,6 +22,7 @@ import re
 import os
 import random
 import sqlite3
+import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -36,7 +32,17 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('BOT_SECRET_KEY', 'replace-with-secure-secret')
 DB_PATH = os.environ.get('BOT_DB', 'evolve_bot.db')
 
-# ---------------------- Basic DB (SQLite) ----------------------
+# ---------------------- CONFIG ----------------------
+DASHBOARD_URL = "http://127.0.0.1:5001"  # URL of evolve_dashboard.py
+
+# Known tasks to detect by name or keyword
+TASK_MAP = {
+    "ai intro": 1,
+    "python basics": 2,
+    "data science": 3,
+}
+
+# ---------------------- Database ----------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -52,8 +58,6 @@ def init_db():
 
 init_db()
 
-# ---------------------- Utilities ----------------------
-
 def log_message(session_id, role, content):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -62,30 +66,7 @@ def log_message(session_id, role, content):
     conn.commit()
     conn.close()
 
-# simple age-check placeholder - to be replaced by a proper age verification system in production
-def check_age_claim(age_str):
-    try:
-        age = int(age_str)
-        return age >= 18
-    except Exception:
-        return False
-
-# Basic content moderation heuristics (very simplistic) - replace with a proper moderation API
-ILLEGAL_PATTERNS = [r"\bchild\b", r"\bunderage\b", r"\bteen\b"]
-PROHIBITED_PATTERNS = [r"\bkill\b", r"\bterror\b", r"\bexplosive\b"]
-
-def moderate_text(text):
-    lowered = text.lower()
-    for p in ILLEGAL_PATTERNS:
-        if re.search(p, lowered):
-            return False, 'sexual content referencing minors detected'
-    for p in PROHIBITED_PATTERNS:
-        if re.search(p, lowered):
-            return False, 'potential violent/illegal content detected'
-    # add more checks (image requests, self-harm, exploitation, etc.)
-    return True, ''
-
-# session helper
+# ---------------------- Session Helpers ----------------------
 def get_session_id():
     sid = session.get('sid')
     if not sid:
@@ -93,126 +74,111 @@ def get_session_id():
         session['sid'] = sid
     return sid
 
-# decorator to require age verification for explicit endpoints
-def require_age_verified(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not session.get('age_verified'):
-            return jsonify({'error': 'age_verification_required'}), 403
-        return f(*args, **kwargs)
-    return decorated
+# ---------------------- Moderation ----------------------
+ILLEGAL_PATTERNS = [r"\bchild\b", r"\bunderage\b", r"\bteen\b"]
+PROHIBITED_PATTERNS = [r"\bkill\b", r"\bterror\b", r"\bexplosive\b"]
 
-# ---------------------- Reply generation ----------------------
+def moderate_text(text):
+    lowered = text.lower()
+    for p in ILLEGAL_PATTERNS:
+        if re.search(p, lowered):
+            return False, 'content referencing minors detected'
+    for p in PROHIBITED_PATTERNS:
+        if re.search(p, lowered):
+            return False, 'potentially violent/illegal content detected'
+    return True, ''
 
-# A small set of templates to produce varied replies. Use Jinja-style substitution for dynamic fields.
+# ---------------------- Reply Templates ----------------------
 REPLY_TEMPLATES = [
-    "Hey {{name}} — thanks for writing. I love hearing about your day. Tell me more: what's one small thing that made you smile today?",
-    "Hi {{name}} — you're making me blush. I like that you said '{{snippet}}'. What else do you like about that?",
-    "Hello {{name}}. I'm here to listen and enjoy this conversation with you. What are you craving to talk about right now?",
-    "Sweet {{name}}, that sounds interesting. I enjoy deep conversations and playful moments. Want to share a secret fantasy or keep it light?",
+    "Hi {{name}}, what task are you focusing on today?",
+    "Hello {{name}}! Need a hand starting your next lesson?",
+    "Hey {{name}}, ready to keep learning? You can try: AI Intro, Python Basics, or Data Science Overview.",
+    "Nice to see you {{name}}! What topic do you want me to help you with?",
 ]
 
 SYSTEM_PROMPT = (
-    "You are a compassionate, flirty, respectful conversationalist. Keep replies adult-only (>=18), avoid explicit sexual details unless the user clearly asks",
+    "You are Evolve Bot — a smart, polite, task-oriented educational assistant. "
+    "You help users learn, track progress, and complete educational tasks. "
+    "Avoid personal or unrelated topics. Focus on productivity and growth."
 )
 
-# Optional integration with an LLM (OpenAI shown as example) - YOU MUST install openai and set OPENAI_API_KEY
-def call_llm_api(prompt, max_tokens=200):
-    api_key = os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        return None  # caller will fall back to template
-    # Example using requests to call OpenAI completion endpoint (commented out - placeholder)
-    # import requests
-    # headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
-    # payload = { 'model': 'gpt-4o-mini', 'messages': [{'role':'system','content':SYSTEM_PROMPT},{'role':'user','content':prompt}], 'max_tokens': max_tokens }
-    # r = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=payload)
-    # if r.status_code == 200:
-    #     return r.json()['choices'][0]['message']['content']
-    # else:
-    #     return None
-    return None
+# ---------------------- Core Logic ----------------------
+def detect_task_from_message(text):
+    text = text.lower()
+    for key, tid in TASK_MAP.items():
+        if key in text:
+            return tid, key
+    return None, None
 
+def run_dashboard_task(task_id):
+    """Call evolve_dashboard.py to simulate running a task."""
+    try:
+        res = requests.get(f"{DASHBOARD_URL}/run_task/{task_id}", timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            return True, data.get("message", "Task completed.")
+        else:
+            return False, "Dashboard did not respond properly."
+    except Exception as e:
+        return False, f"Dashboard not reachable ({e})."
 
-def choose_template_and_fill(user_name='Friend', user_snippet=''):
+def choose_template_and_fill(user_name='Learner'):
     t = random.choice(REPLY_TEMPLATES)
-    rendered = render_template_string(t, name=user_name, snippet=user_snippet)
-    return rendered
+    return render_template_string(t, name=user_name)
 
-
-def generate_reply(user_message, user_name='Friend'):
-    # moderation
+def generate_reply(user_message, user_name='Learner'):
     ok, reason = moderate_text(user_message)
     if not ok:
         return {'error': 'blocked', 'reason': reason}
 
-    # try LLM first (optional)
-    prompt = f"{SYSTEM_PROMPT}\nUser: {user_message}\nRespond as a warm adult conversational partner."
-    llm_resp = call_llm_api(prompt)
-    if llm_resp:
-        # post-process: avoid extremely graphic language unless user requested explicit content
-        return {'reply': llm_resp.strip(), 'source': 'llm'}
+    task_id, task_key = detect_task_from_message(user_message)
+    if task_id:
+        success, msg = run_dashboard_task(task_id)
+        if success:
+            reply = f"✅ I’ve just completed the **{task_key.title()}** task for you! {msg}"
+        else:
+            reply = f"⚠️ I tried to start the **{task_key.title()}** task, but there was a problem: {msg}"
+    else:
+        reply = choose_template_and_fill(user_name)
 
-    # deterministic template fallback
-    snippet = (user_message[:80] + '...') if len(user_message) > 80 else user_message
-    reply = choose_template_and_fill(user_name, snippet)
     return {'reply': reply, 'source': 'template'}
 
-# ---------------------- HTTP Endpoints ----------------------
+# ---------------------- Routes ----------------------
 @app.route('/')
 def home():
     sid = get_session_id()
-    return jsonify({'message': 'Evolve Bot running', 'session': sid})
-
-@app.route('/verify_age', methods=['POST'])
-def verify_age():
-    data = request.json or {}
-    age_claim = data.get('age') or data.get('age_claim')
-    sid = get_session_id()
-    if not age_claim:
-        return jsonify({'error': 'age_missing'}), 400
-    if check_age_claim(age_claim):
-        session['age_verified'] = True
-        log_message(sid, 'system', f'age_verified:{age_claim}')
-        return jsonify({'ok': True})
-    else:
-        return jsonify({'error': 'must_be_18_plus'}), 403
+    return jsonify({'message': 'Evolve Learning Bot active', 'session': sid})
 
 @app.route('/message', methods=['POST'])
-@require_age_verified
 def message():
     data = request.json or {}
     text = data.get('text', '')
-    user_name = data.get('name', 'Friend')
+    user_name = data.get('name', 'Learner')
     sid = get_session_id()
 
-    if not text:
+    if not text.strip():
         return jsonify({'error': 'empty_message'}), 400
 
-    # Log user message
     log_message(sid, 'user', text)
-
-    # generate reply
     result = generate_reply(text, user_name)
+
     if 'error' in result:
         log_message(sid, 'system', f'blocked_reason:{result.get("reason")}')
         return jsonify({'error': result.get('reason')}), 403
 
     reply_text = result['reply']
     log_message(sid, 'bot', reply_text)
-
     return jsonify({'reply': reply_text, 'source': result.get('source', 'template')})
 
-@app.route('/admin/messages', methods=['GET'])
+@app.route('/admin/messages')
 def admin_messages():
-    # very simple admin listing - in production add auth
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT id, session_id, role, content, created_at FROM messages ORDER BY id DESC LIMIT 200')
+    c.execute('SELECT id, session_id, role, content, created_at FROM messages ORDER BY id DESC LIMIT 100')
     rows = c.fetchall()
     conn.close()
-    out = [{'id':r[0],'session':r[1],'role':r[2],'content':r[3],'time':r[4]} for r in rows]
-    return jsonify(out)
+    return jsonify([{'id':r[0],'session':r[1],'role':r[2],'content':r[3],'time':r[4]} for r in rows])
 
-# ---------------------- Run ----------------------
+# ---------------------- Main ----------------------
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
