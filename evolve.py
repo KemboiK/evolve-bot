@@ -92,13 +92,13 @@ def moderate_text(text):
 REPLY_TEMPLATES = [
     "Hi {{name}}, what task are you focusing on today?",
     "Hello {{name}}! Need a hand starting your next lesson?",
-    "Hey {{name}}, ready to keep learning? You can try: AI Intro, Python Basics, or Data Science Overview.",
+    "Hey {{name}}, ready to keep learning? You can try: AI Intro, Python Basics or Data Science Overview.",
     "Nice to see you {{name}}! What topic do you want me to help you with?",
 ]
 
 SYSTEM_PROMPT = (
-    "You are Evolve Bot — a smart, polite, task-oriented educational assistant. "
-    "You help users learn, track progress, and complete educational tasks. "
+    "You are Evolve Bot a smart, polite, task-oriented educational assistant. "
+    "You help users learn, track progress and complete educational tasks. "
     "Avoid personal or unrelated topics. Focus on productivity and growth."
 )
 
