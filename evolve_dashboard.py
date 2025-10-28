@@ -2,7 +2,7 @@
 Evolve Bot + Local Dashboard Demo
 
 Safe local-only simulation of tasks and automation.
-No external website interactions — only local HTML, Flask routes, and mock data.
+No external website interactions — only local HTML, Flask routes and mock data.
 """
 
 from flask import Flask, jsonify, render_template_string, request
@@ -37,7 +37,7 @@ PAGE_TEMPLATE = """
 </head>
 <body>
     <h1> Evolve Bot Dashboard</h1>
-    <p>Click a task to simulate watching, reading, or completing.</p>
+    <p>Click a task to simulate watching, reading or completing.</p>
     {% for t in tasks %}
         <div class="task">
             <h3>{{t.title}}</h3>

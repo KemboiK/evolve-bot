@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Python Basics Quiz</title>
+    <style>
+        body { background-color: #111; color: #eee; font-family: Arial, sans-serif; padding: 30px; }
+        h1 { color: #0f9; }
+        .question { background: #222; padding: 15px; border-radius: 10px; margin-bottom: 15px; }
+        button { background: #0f9; color: #111; border: none; padding: 10px 15px; border-radius: 8px; cursor: pointer; }
+        button:hover { background: #0c6; }
+        .result { margin-top: 20px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>🐍 Python Basics Quiz</h1>
+    <p>Answer these beginner-friendly questions to test your Python knowledge.</p>
+
+    <div id="quiz">
+        <div class="question">
+            <p>1. What symbol is used to start a comment in Python?</p>
+            <input type="radio" name="q1" value="#"> #  
+            <input type="radio" name="q1" value="//"> //  
+            <input type="radio" name="q1" value="/*"> /*  
+        </div>
+
+        <div class="question">
+            <p>2. What data type does this expression produce? <code>type(3.14)</code></p>
+            <input type="radio" name="q2" value="int"> int  
+            <input type="radio" name="q2" value="float"> float  
+            <input type="radio" name="q2" value="str"> str  
+        </div>
+
+        <div class="question">
+            <p>3. Which keyword is used to define a function in Python?</p>
+            <input type="radio" name="q3" value="func"> func  
+            <input type="radio" name="q3" value="define"> define  
+            <input type="radio" name="q3" value="def"> def  
+        </div>
+
+        <button onclick="submitQuiz()">Submit Answers</button>
+        <p class="result" id="result"></p>
+    </div>
+
+    <script>
+        function submitQuiz() {
+            const answers = {
+                q1: '#',
+                q2: 'float',
+                q3: 'def'
+            };
+            let score = 0;
+            for (let key in answers) {
+                const selected = document.querySelector(`input[name="${key}"]:checked`);
+                if (selected && selected.value === answers[key]) score++;
+            }
+            document.getElementById("result").innerText = `You scored ${score}/3 ✅`;
+        }
+    </script>
+</body>
+</html>
