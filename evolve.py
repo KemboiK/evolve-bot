@@ -1,11 +1,13 @@
 """
-Evolve Learning Bot (Flask) - V3
+Evolve Learning Bot (Flask) - V4
 --------------------------------
 Enhanced conversational learning assistant.
 - Tracks XP, levels, and daily streaks
 - Remembers user preferences
-- Uses slash commands for stats and reset
-- Connects with evolve_dashboard.py for local tasks
+- Adds /stats, /leaderboard, /focus commands
+- Includes daily challenges for bonus XP
+- Detects inactive users
+- Syncs messages to evolve_dashboard.py
 """
 
 from flask import Flask, request, jsonify, session, render_template_string
@@ -140,10 +142,10 @@ def run_dashboard_task(task_id):
 
 # ---------------- AI OR TEMPLATE ----------------
 REPLY_TEMPLATES = [
-    "Hola {{name}}, ¿en qué tarea quieres trabajar hoy?",
-    "¡Bienvenido de nuevo {{name}}! ¿Listo para aprender algo nuevo?",
-    "Hey {{name}}, puedes probar con AI Intro, Python Basics o Data Science.",
-    "¡Qué gusto verte {{name}}! ¿Qué tema te gustaría estudiar hoy?",
+    "Hey {{name}}, what would you like to learn today?",
+    "Welcome back {{name}}! Ready to level up your skills?",
+    "Hi {{name}}, you can try AI Intro, Python Basics or Data Science.",
+    "Good to see you again {{name}}! What topic would you like to study today?",
 ]
 
 def choose_template_and_fill(name):
@@ -154,68 +156,51 @@ def ai_reply(user_message, name='Learner'):
         res = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres un asistente educativo llamado Evolve Bot."},
+                {"role": "system", "content": "You are a helpful educational assistant named Evolve Bot."},
                 {"role": "user", "content": user_message}
             ]
         )
         return res.choices[0].message.content
     except Exception as e:
-        return f"(AI no disponible: {e})"
+        return f"(AI unavailable: {e})"
 
-# ---------------- MESSAGE FLOW ----------------
-@app.route('/message', methods=['POST'])
-def message():
-    data = request.json or {}
-    text = data.get('text', '').strip()
-    user_name = data.get('name', 'Learner')
+# ---------------- DAILY CHALLENGE ----------------
+DAILY_QUESTIONS = [
+    ("What is a variable in programming?", "store data"),
+    ("What does HTML stand for?", "hypertext markup language"),
+    ("What is the purpose of machine learning?", "make predictions"),
+]
+
+def get_daily_question():
+    today = date.today().toordinal() % len(DAILY_QUESTIONS)
+    return DAILY_QUESTIONS[today]
+
+@app.route('/daily', methods=['GET'])
+def daily_question():
     sid = get_session_id()
+    q, _ = get_daily_question()
+    return jsonify({'question': q})
 
-    if not text:
-        return jsonify({'error': 'empty_message'}), 400
-
-    save_user(sid, user_name)
-
-    ok, reason = moderate_text(text)
-    if not ok:
-        return jsonify({'error': reason}), 403
-
-    # Commands
-    if text.startswith('/'):
-        cmd = text.lower()
-        user = get_user(sid)
-        if cmd == '/help':
-            return jsonify({'reply': "Comandos disponibles: /help, /xp, /level, /streak, /reset"})
-        elif cmd == '/xp':
-            return jsonify({'reply': f"Tienes {user['xp']} XP acumulados."})
-        elif cmd == '/level':
-            return jsonify({'reply': f"Estás en el nivel {user['level']}."})
-        elif cmd == '/streak':
-            streak = calculate_streak(sid)
-            return jsonify({'reply': f"Llevas una racha de {streak} días seguidos aprendiendo."})
-        elif cmd == '/reset':
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('DELETE FROM progress WHERE session_id=?', (sid,))
-            c.execute('UPDATE users SET xp=0, level=1 WHERE session_id=?', (sid,))
-            conn.commit()
-            conn.close()
-            return jsonify({'reply': "Tu progreso ha sido reiniciado."})
-
-    # Normal messages
-    task_id, task_key = detect_task_from_message(text)
-    if task_id:
-        success, msg = run_dashboard_task(task_id)
-        if success:
-            add_xp(sid, 50)
-            reply = f"✅ Tarea **{task_key.title()}** completada. {msg}"
-        else:
-            reply = f"⚠️ Hubo un problema al iniciar {task_key.title()}: {msg}"
+@app.route('/answer', methods=['POST'])
+def answer_question():
+    sid = get_session_id()
+    user_answer = request.json.get('answer', '').strip().lower()
+    _, correct = get_daily_question()
+    if correct in user_answer:
+        add_xp(sid, 25)
+        return jsonify({'result': ' Correct! You earned +25 XP.'})
     else:
-        add_xp(sid, 10)
-        reply = ai_reply(text, user_name) if USE_AI else choose_template_and_fill(user_name)
+        return jsonify({'result': ' Incorrect. Try again tomorrow.'})
 
-    log_message(sid, 'bot', reply)
-    return jsonify({'reply': reply, 'timestamp': datetime.utcnow().isoformat()})
+# ---------------- FOCUS MODE ----------------
+FOCUS_MODE = {}
+
+@app.route('/focus', methods=['POST'])
+def toggle_focus():
+    sid = get_session_id()
+    FOCUS_MODE[sid] = not FOCUS_MODE.get(sid, False)
+    state = "enabled" if FOCUS_MODE[sid] else "disabled"
+    return jsonify({'reply': f" Focus mode {state}."})
 
 # ---------------- STREAK & LOGGING ----------------
 def log_message(sid, role, content):
@@ -225,6 +210,14 @@ def log_message(sid, role, content):
               (sid, role, content, datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
+    send_to_dashboard(sid, content, role)
+
+def send_to_dashboard(sid, text, role):
+    try:
+        payload = {'sid': sid, 'text': text, 'role': role}
+        requests.post(f"{DASHBOARD_URL}/log_message", json=payload, timeout=2)
+    except:
+        pass
 
 def calculate_streak(sid):
     conn = sqlite3.connect(DB_PATH)
@@ -242,10 +235,106 @@ def calculate_streak(sid):
             break
     return streak
 
+# ---------------- COMMAND UTILITIES ----------------
+def get_user_stats(sid):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM messages WHERE session_id=? AND role="user"', (sid,))
+    total_msgs = c.fetchone()[0]
+    conn.close()
+    streak = calculate_streak(sid)
+    user = get_user(sid)
+    return f" Stats for {user['name']}:\n- Level: {user['level']}\n- XP: {user['xp']}\n- Streak: {streak} days\n- Messages sent: {total_msgs}"
+
+def get_leaderboard():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT name, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 5')
+    rows = c.fetchall()
+    conn.close()
+    board = "\n".join([f"{i+1}. {r[0]} (Lvl {r[1]} - {r[2]} XP)" for i, r in enumerate(rows)])
+    return "🏆 Top Learners:\n" + board
+
+# ---------------- INACTIVE USERS ----------------
+@app.route('/remind_inactive', methods=['GET'])
+def remind_inactive():
+    days_limit = int(request.args.get('days', 3))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    threshold = (datetime.utcnow() - timedelta(days=days_limit)).isoformat()
+    c.execute('SELECT name, last_seen FROM users WHERE last_seen < ?', (threshold,))
+    inactive = c.fetchall()
+    conn.close()
+    return jsonify({'inactive_users': [{'name': n, 'last_seen': l} for n, l in inactive]})
+
+# ---------------- MESSAGE HANDLER ----------------
+@app.route('/message', methods=['POST'])
+def message():
+    data = request.json or {}
+    text = data.get('text', '').strip()
+    user_name = data.get('name', 'Learner')
+    sid = get_session_id()
+
+    if not text:
+        return jsonify({'error': 'empty_message'}), 400
+
+    save_user(sid, user_name)
+    ok, reason = moderate_text(text)
+    if not ok:
+        return jsonify({'error': reason}), 403
+
+    # Focus mode
+    if FOCUS_MODE.get(sid):
+        if not detect_task_from_message(text)[0]:
+            return jsonify({'reply': "You're in focus mode. Discuss tasks only or use /focus to exit."})
+
+    # Commands
+    if text.startswith('/'):
+        cmd = text.lower()
+        user = get_user(sid)
+        if cmd == '/help':
+            return jsonify({'reply': "Available commands: /help, /xp, /level, /streak, /reset, /stats, /leaderboard"})
+        elif cmd == '/xp':
+            return jsonify({'reply': f"You have {user['xp']} XP."})
+        elif cmd == '/level':
+            return jsonify({'reply': f"You are at level {user['level']}."})
+        elif cmd == '/streak':
+            streak = calculate_streak(sid)
+            return jsonify({'reply': f"You have a {streak}-day learning streak."})
+        elif cmd == '/stats':
+            return jsonify({'reply': get_user_stats(sid)})
+        elif cmd == '/leaderboard':
+            return jsonify({'reply': get_leaderboard()})
+        elif cmd == '/reset':
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('DELETE FROM progress WHERE session_id=?', (sid,))
+            c.execute('UPDATE users SET xp=0, level=1 WHERE session_id=?', (sid,))
+            conn.commit()
+            conn.close()
+            return jsonify({'reply': "Your progress has been reset."})
+
+    # Normal messages
+    task_id, task_key = detect_task_from_message(text)
+    if task_id:
+        success, msg = run_dashboard_task(task_id)
+        if success:
+            add_xp(sid, 50)
+            reply = f" Task **{task_key.title()}** completed. {msg}"
+        else:
+            reply = f" There was an issue starting {task_key.title()}: {msg}"
+    else:
+        add_xp(sid, 10)
+        reply = ai_reply(text, user_name) if USE_AI else choose_template_and_fill(user_name)
+
+    log_message(sid, 'bot', reply)
+    return jsonify({'reply': reply, 'timestamp': datetime.utcnow().isoformat()})
+
+# ---------------- ROOT ----------------
 @app.route('/')
 def home():
     sid = get_session_id()
-    return jsonify({'message': 'Evolve Bot V3 active', 'session': sid})
+    return jsonify({'message': 'Evolve Bot V4 active', 'session': sid})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
