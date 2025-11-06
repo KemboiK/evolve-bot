@@ -1,71 +1,94 @@
 """
-Evolve Dashboard (Flask) - V3
+Evolve Dashboard (Flask) - V4
 ------------------------------
-Simulates task completions and progress.
-Adds quotes, leaderboard, and task visuals.
+Enhanced dashboard for Evolve Learning Bot.
+- Simulates interactive tasks
+- Displays rotating quotes
+- Dynamic leaderboard
+- Task progress bar + quiz previews
 """
 
 from flask import Flask, jsonify, render_template_string
-import os, random, time
+import os, random, time, json
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('BOT_SECRET_KEY', 'local-secret')
 
+# ---------------- TASKS ----------------
 TASKS = [
     {"id": 1, "title": "Watch AI Intro", "type": "video", "file": "static/ai_intro.mp4"},
     {"id": 2, "title": "Complete Python Basics", "type": "quiz", "file": "static/python_basics.html"},
     {"id": 3, "title": "Read Data Science Overview", "type": "article", "file": "static/data_science.html"},
+    {"id": 4, "title": "Take General Knowledge Quiz", "type": "quiz", "file": "static/general_quiz.html"},
 ]
 
+# ---------------- QUOTES ----------------
 QUOTES = [
-    "“El aprendizaje nunca agota la mente.” — Leonardo da Vinci",
-    "“El éxito es la suma de pequeños esfuerzos repetidos día tras día.”",
-    "“Nunca es tarde para ser lo que podrías haber sido.” — George Eliot",
-    "“Aprender es un tesoro que seguirá a su dueño a todas partes.” — Proverbio chino"
+    "“Learning never exhausts the mind.” — Leonardo da Vinci",
+    "“Success is the sum of small efforts repeated day in and day out.” — Robert Collier",
+    "“Never stop learning, because life never stops teaching.”",
+    "“Education is the most powerful weapon you can use to change the world.” — Nelson Mandela",
+    "“Curiosity is the wick in the candle of learning.” — William Arthur Ward"
 ]
 
+# ---------------- LEADERBOARD ----------------
 LEADERBOARD = [
-    {"name": "Ana", "xp": 320, "level": 4},
-    {"name": "Carlos", "xp": 270, "level": 3},
-    {"name": "Lucía", "xp": 180, "level": 2},
+    {"name": "Ana", "xp": 520, "level": 6},
+    {"name": "Carlos", "xp": 400, "level": 5},
+    {"name": "Lucía", "xp": 290, "level": 3},
+    {"name": "Devon", "xp": 230, "level": 3},
 ]
 
+# ---------------- TEMPLATE ----------------
 PAGE_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Evolve Dashboard V3</title>
+    <title>Evolve Dashboard V4</title>
     <style>
-        body { background: #111; color: #eee; font-family: Arial; padding: 20px; }
-        h1 { color: #0f9; }
-        .task { background: #222; padding: 15px; border-radius: 10px; margin-bottom: 15px; }
-        .leaderboard { margin-top: 30px; }
-        button { padding: 8px 15px; border: none; border-radius: 8px; background: #0f9; color: #111; cursor: pointer; }
-        .quote { margin-top: 30px; font-style: italic; color: #9f9; }
-        .bar { background: #333; border-radius: 10px; margin-top: 10px; }
-        .fill { height: 10px; border-radius: 10px; background: #0f9; width: 0%; transition: width 1s; }
+        body { background: #0d1117; color: #e6edf3; font-family: Arial, sans-serif; padding: 25px; }
+        h1 { color: #00d084; }
+        .task { background: #161b22; padding: 15px; border-radius: 10px; margin-bottom: 15px; box-shadow: 0 0 10px #0f3; }
+        .leaderboard { margin-top: 30px; background: #161b22; padding: 15px; border-radius: 10px; }
+        button { padding: 8px 15px; border: none; border-radius: 8px; background: #00d084; color: #0d1117; cursor: pointer; font-weight: bold; }
+        .quote { margin-top: 30px; font-style: italic; color: #7ee787; }
+        .bar { background: #21262d; border-radius: 10px; margin-top: 10px; }
+        .fill { height: 10px; border-radius: 10px; background: #00d084; width: 0%; transition: width 1s; }
+        a { color: #58a6ff; text-decoration: none; }
+        .daily-reward { background: #0a3622; color: #00ffb3; padding: 10px; border-radius: 8px; margin-top: 25px; }
+        .reward-btn { background: #00ffb3; color: #0d1117; padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1>Evolve Dashboard V3</h1>
-    <p>Selecciona una tarea para simular progreso.</p>
+    <h1>🚀 Evolve Dashboard V4</h1>
+    <p>Select a task below to simulate learning progress.</p>
 
     {% for t in tasks %}
         <div class="task">
             <h3>{{t.title}}</h3>
-            <button onclick="runTask({{t.id}})">Iniciar tarea</button>
+            <p>Type: {{t.type | capitalize}}</p>
+            {% if t.file %}
+                <p><a href="{{t.file}}" target="_blank">Open resource</a></p>
+            {% endif %}
+            <button onclick="runTask({{t.id}})">Start Task</button>
             <div class="bar"><div id="bar{{t.id}}" class="fill"></div></div>
         </div>
     {% endfor %}
 
     <div class="leaderboard">
-        <h3>🏆 Clasificación Global</h3>
-        <ul>
+        <h3>🏆 Global Leaderboard</h3>
+        <ul id="leaderboard">
             {% for user in leaderboard %}
-                <li>{{user.name}} — Nivel {{user.level}} ({{user.xp}} XP)</li>
+                <li>{{user.name}} — Level {{user.level}} ({{user.xp}} XP)</li>
             {% endfor %}
         </ul>
+    </div>
+
+    <div class="daily-reward">
+        <h4>🎁 Daily Reward</h4>
+        <p>Claim 20 bonus XP once every day!</p>
+        <button class="reward-btn" onclick="claimReward()">Claim Reward</button>
     </div>
 
     <div id="quote" class="quote"></div>
@@ -79,12 +102,33 @@ PAGE_TEMPLATE = """
             bar.style.width = "100%";
             alert(data.message);
             document.getElementById("quote").innerText = data.quote;
+            refreshLeaderboard();
+        }
+
+        async function claimReward() {
+            const res = await fetch('/claim_reward');
+            const data = await res.json();
+            alert(data.message);
+            refreshLeaderboard();
+        }
+
+        async function refreshLeaderboard() {
+            const res = await fetch('/leaderboard');
+            const data = await res.json();
+            const ul = document.getElementById('leaderboard');
+            ul.innerHTML = '';
+            data.forEach(u => {
+                const li = document.createElement('li');
+                li.textContent = `${u.name} — Level ${u.level} (${u.xp} XP)`;
+                ul.appendChild(li);
+            });
         }
     </script>
 </body>
 </html>
 """
 
+# ---------------- ROUTES ----------------
 @app.route("/")
 def home():
     return render_template_string(PAGE_TEMPLATE, tasks=TASKS, leaderboard=LEADERBOARD)
@@ -94,12 +138,28 @@ def run_task(task_id):
     task = next((t for t in TASKS if t["id"] == task_id), None)
     if not task:
         return jsonify({"error": "task_not_found"}), 404
-    time.sleep(random.uniform(0.5, 1.2))
+    time.sleep(random.uniform(0.6, 1.5))
     quote = random.choice(QUOTES)
-    msg = f"✅ {task['title']} completado con éxito."
+    msg = f" {task['title']} completed successfully!"
+    # Simulate small XP increase for leaderboard
+    LEADERBOARD[random.randint(0, len(LEADERBOARD)-1)]['xp'] += random.randint(5, 15)
     return jsonify({"status": "done", "message": msg, "quote": quote})
 
+@app.route("/claim_reward")
+def claim_reward():
+    # Randomly choose user to give bonus XP
+    lucky_user = random.choice(LEADERBOARD)
+    bonus = 20
+    lucky_user["xp"] += bonus
+    return jsonify({"message": f"{lucky_user['name']} claimed {bonus} bonus XP!"})
+
+@app.route("/leaderboard")
+def get_leaderboard():
+    sorted_board = sorted(LEADERBOARD, key=lambda x: (-x['level'], -x['xp']))
+    return jsonify(sorted_board)
+
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
-    print("Evolve Dashboard V3 running at: http://127.0.0.1:5001")
+    print("Evolve Dashboard V4 running at: http://127.0.0.1:5001")
     app.run(port=5001, debug=True)
