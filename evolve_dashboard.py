@@ -1,15 +1,16 @@
 """
-Evolve Dashboard (Flask) - V4
-------------------------------
-Enhanced dashboard for Evolve Learning Bot.
+Evolve Dashboard (Flask) - V4 Synced
+-------------------------------------
+Enhanced dashboard synced with Evolve Learning Bot.
 - Simulates interactive tasks
-- Displays rotating quotes
-- Dynamic leaderboard
-- Task progress bar + quiz previews
+- Displays rotating motivational quotes
+- Dynamic leaderboard with XP rewards
+- Daily reward system
+- Achievement popups
 """
 
 from flask import Flask, jsonify, render_template_string
-import os, random, time, json
+import os, random, time
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('BOT_SECRET_KEY', 'local-secret')
@@ -28,18 +29,20 @@ QUOTES = [
     "“Success is the sum of small efforts repeated day in and day out.” — Robert Collier",
     "“Never stop learning, because life never stops teaching.”",
     "“Education is the most powerful weapon you can use to change the world.” — Nelson Mandela",
-    "“Curiosity is the wick in the candle of learning.” — William Arthur Ward"
+    "“Curiosity is the wick in the candle of learning.” — William Arthur Ward",
+    "“Knowledge grows when shared.”",
+    "“A little progress each day adds up to big results.”"
 ]
 
 # ---------------- LEADERBOARD ----------------
 LEADERBOARD = [
-    {"name": "Ana", "xp": 520, "level": 6},
-    {"name": "Carlos", "xp": 400, "level": 5},
-    {"name": "Lucía", "xp": 290, "level": 3},
-    {"name": "Devon", "xp": 230, "level": 3},
+    {"name": "Ana", "xp": 520, "level": 6, "achievements": ["Fast Learner"]},
+    {"name": "Carlos", "xp": 400, "level": 5, "achievements": ["Consistent"]},
+    {"name": "Lucía", "xp": 290, "level": 3, "achievements": []},
+    {"name": "Devon", "xp": 230, "level": 3, "achievements": []},
 ]
 
-# ---------------- TEMPLATE ----------------
+# ---------------- HTML TEMPLATE ----------------
 PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -58,6 +61,7 @@ PAGE_TEMPLATE = """
         a { color: #58a6ff; text-decoration: none; }
         .daily-reward { background: #0a3622; color: #00ffb3; padding: 10px; border-radius: 8px; margin-top: 25px; }
         .reward-btn { background: #00ffb3; color: #0d1117; padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        .achievement { background: #111; color: #ffd700; padding: 8px; border-radius: 8px; margin-top: 10px; display: inline-block; }
     </style>
 </head>
 <body>
@@ -80,7 +84,15 @@ PAGE_TEMPLATE = """
         <h3>🏆 Global Leaderboard</h3>
         <ul id="leaderboard">
             {% for user in leaderboard %}
-                <li>{{user.name}} — Level {{user.level}} ({{user.xp}} XP)</li>
+                <li>{{user.name}} — Level {{user.level}} ({{user.xp}} XP)
+                    {% if user.achievements %}
+                        <div>
+                            {% for a in user.achievements %}
+                                <span class="achievement">🏅 {{a}}</span>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                </li>
             {% endfor %}
         </ul>
     </div>
@@ -119,7 +131,8 @@ PAGE_TEMPLATE = """
             ul.innerHTML = '';
             data.forEach(u => {
                 const li = document.createElement('li');
-                li.textContent = `${u.name} — Level ${u.level} (${u.xp} XP)`;
+                li.innerHTML = `${u.name} — Level ${u.level} (${u.xp} XP)` +
+                    (u.achievements.length ? '<div>' + u.achievements.map(a => `<span class="achievement">🏅 ${a}</span>`).join(' ') + '</div>' : '');
                 ul.appendChild(li);
             });
         }
@@ -138,19 +151,29 @@ def run_task(task_id):
     task = next((t for t in TASKS if t["id"] == task_id), None)
     if not task:
         return jsonify({"error": "task_not_found"}), 404
+
     time.sleep(random.uniform(0.6, 1.5))
     quote = random.choice(QUOTES)
-    msg = f" {task['title']} completed successfully!"
-    # Simulate small XP increase for leaderboard
-    LEADERBOARD[random.randint(0, len(LEADERBOARD)-1)]['xp'] += random.randint(5, 15)
+    msg = f"✅ {task['title']} completed successfully!"
+
+    # Give XP + check for new achievements
+    user = random.choice(LEADERBOARD)
+    gained = random.randint(10, 25)
+    user["xp"] += gained
+    if user["xp"] > 500 and "Level Master" not in user["achievements"]:
+        user["achievements"].append("Level Master")
+    if len(user["achievements"]) >= 3 and "Elite Learner" not in user["achievements"]:
+        user["achievements"].append("Elite Learner")
+
     return jsonify({"status": "done", "message": msg, "quote": quote})
 
 @app.route("/claim_reward")
 def claim_reward():
-    # Randomly choose user to give bonus XP
     lucky_user = random.choice(LEADERBOARD)
     bonus = 20
     lucky_user["xp"] += bonus
+    if bonus >= 20 and "Daily Dedication" not in lucky_user["achievements"]:
+        lucky_user["achievements"].append("Daily Dedication")
     return jsonify({"message": f"{lucky_user['name']} claimed {bonus} bonus XP!"})
 
 @app.route("/leaderboard")
@@ -161,5 +184,5 @@ def get_leaderboard():
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
-    print("Evolve Dashboard V4 running at: http://127.0.0.1:5001")
+    print("Evolve Dashboard V4 synced running at: http://127.0.0.1:5001")
     app.run(port=5001, debug=True)
