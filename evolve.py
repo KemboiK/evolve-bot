@@ -12,7 +12,7 @@ New in V5:
 - Minor UX improvements and safer admin protection via ADMIN_KEY env var
 """
 
-from flask import Flask, request, jsonify, session, render_template_string, abort
+from flask import Flask, request, jsonify, session, render_template_string
 import re
 import os
 import random
@@ -31,11 +31,14 @@ DASHBOARD_URL = os.environ.get('DASHBOARD_URL', 'http://127.0.0.1:5001')
 USE_AI = os.getenv("USE_AI", "false").lower() == "true"
 ADMIN_KEY = os.environ.get('ADMIN_KEY', 'admin-secret-key')  # provide via env for admin endpoints
 
+# Optional OpenAI integration; safe fallback if not installed or key not set
 try:
     import openai
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     if OPENAI_API_KEY:
         openai.api_key = OPENAI_API_KEY
+    else:
+        USE_AI = False
 except Exception:
     USE_AI = False
 
@@ -43,7 +46,6 @@ except Exception:
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # messages
     c.execute('''CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY,
                     session_id TEXT,
@@ -51,7 +53,6 @@ def init_db():
                     content TEXT,
                     created_at TEXT
                 )''')
-    # progress
     c.execute('''CREATE TABLE IF NOT EXISTS progress (
                     id INTEGER PRIMARY KEY,
                     session_id TEXT,
@@ -59,7 +60,6 @@ def init_db():
                     progress INTEGER DEFAULT 0,
                     last_updated TEXT
                 )''')
-    # users
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                     session_id TEXT PRIMARY KEY,
                     name TEXT,
@@ -68,14 +68,12 @@ def init_db():
                     focus_area TEXT,
                     last_seen TEXT
                 )''')
-    # achievements master list
     c.execute('''CREATE TABLE IF NOT EXISTS achievements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     key TEXT UNIQUE,
                     title TEXT,
                     description TEXT
                 )''')
-    # user achievements mapping
     c.execute('''CREATE TABLE IF NOT EXISTS user_achievements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
@@ -171,7 +169,7 @@ def run_dashboard_task(task_id):
     except Exception as e:
         return False, str(e)
 
-# ---------------- AI OR TEMPLATE ----------------
+# ---------------- AI / TEMPLATE ----------------
 REPLY_TEMPLATES = [
     "Hey {{name}}, what would you like to learn today?",
     "Welcome back {{name}}! Ready to level up your skills?",
@@ -183,13 +181,16 @@ def choose_template_and_fill(name):
     return render_template_string(random.choice(REPLY_TEMPLATES), name=name)
 
 def ai_reply(user_message, name='Learner'):
+    if not USE_AI:
+        return choose_template_and_fill(name)
     try:
         res = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful educational assistant named Evolve Bot."},
                 {"role": "user", "content": user_message}
-            ]
+            ],
+            max_tokens=300
         )
         return res.choices[0].message.content
     except Exception as e:
@@ -204,7 +205,7 @@ QUOTES = [
     "Curiosity is the wick in the candle of learning. — William Arthur Ward"
 ]
 
-# ---------------- STREAK CALC & MESSAGE LOGGING ----------------
+# ---------------- LOGGING & STREAK ----------------
 def log_message(sid, role, content):
     conn = get_db_connection()
     c = conn.cursor()
@@ -212,7 +213,6 @@ def log_message(sid, role, content):
               (sid, role, content, datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
-    # also send to dashboard for analytics
     send_to_dashboard(sid, content, role)
 
 def send_to_dashboard(sid, text, role):
@@ -220,7 +220,6 @@ def send_to_dashboard(sid, text, role):
         payload = {'sid': sid, 'text': text, 'role': role}
         requests.post(f"{DASHBOARD_URL}/log_message", json=payload, timeout=2)
     except Exception:
-        # dashboard offline or unreachable - ignore
         pass
 
 def calculate_streak(sid):
@@ -232,11 +231,18 @@ def calculate_streak(sid):
     days = sorted([r[0] for r in rows])
     if not days:
         return 0
-    # parse dates and calculate consecutive backward streak
     streak = 1
+    # handle single-day case
+    if len(days) == 1:
+        return 1
     for i in range(len(days)-1, 0, -1):
-        d_cur = datetime.fromisoformat(days[i])
-        d_prev = datetime.fromisoformat(days[i-1])
+        try:
+            d_cur = datetime.fromisoformat(days[i])
+            d_prev = datetime.fromisoformat(days[i-1])
+        except Exception:
+            # fallback if format not exactly YYYY-MM-DD
+            d_cur = datetime.strptime(days[i][:10], "%Y-%m-%d")
+            d_prev = datetime.strptime(days[i-1][:10], "%Y-%m-%d")
         if (d_cur - d_prev).days == 1:
             streak += 1
         else:
@@ -245,12 +251,6 @@ def calculate_streak(sid):
 
 # ---------------- SMART XP & ACHIEVEMENTS ----------------
 def add_xp(sid, amount, reason=""):
-    """
-    Smart XP:
-    - Base amount passed in
-    - Streak multiplier: +10% per consecutive day up to +50%
-    - Trigger achievements on milestones
-    """
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT xp, level FROM users WHERE session_id=?', (sid,))
@@ -275,7 +275,6 @@ def add_xp(sid, amount, reason=""):
     conn.commit()
     conn.close()
 
-    # Log event and check achievements
     event_text = f"XP +{gained} ({amount} base, streak x{streak_multiplier:.2f})"
     if reason:
         event_text += f" - {reason}"
@@ -294,25 +293,19 @@ def get_total_xp_for_user(sid):
     if not row:
         return 0
     xp, level = row
-    # estimate total xp including previous levels (approx)
-    # total = xp + sum_{i=1 to level-1} (i * 100)
     total = xp + sum(i * 100 for i in range(1, level))
     return total
 
 def check_and_unlock_achievements(sid):
-    """
-    Evaluate achievement rules for user and unlock any that apply.
-    """
     user = get_user(sid)
     if not user:
-        return
+        return []
     unlocked = []
     total_xp = get_total_xp_for_user(sid)
     streak = calculate_streak(sid)
     conn = get_db_connection()
     c = conn.cursor()
 
-    # simple rules
     rules = [
         ("first_xp", lambda u: total_xp >= 1),
         ("century_xp", lambda u: total_xp >= 100),
@@ -320,7 +313,6 @@ def check_and_unlock_achievements(sid):
         ("streak_7", lambda u: streak >= 7),
     ]
 
-    # first_task: check messages for a dashboard-run success or progress entry
     c.execute('SELECT COUNT(*) FROM progress WHERE session_id=?', (sid,))
     progress_count = c.fetchone()[0]
     if progress_count > 0:
@@ -330,14 +322,13 @@ def check_and_unlock_achievements(sid):
         try:
             c.execute('SELECT 1 FROM user_achievements WHERE session_id=? AND achievement_key=?', (sid, key))
             if c.fetchone():
-                continue  # already unlocked
+                continue
             if rule(user):
                 now = datetime.utcnow().isoformat()
                 c.execute('INSERT OR IGNORE INTO user_achievements (session_id, achievement_key, unlocked_at) VALUES (?,?,?)',
                           (sid, key, now))
                 conn.commit()
                 unlocked.append(key)
-                # notify dashboard about achievement
                 send_to_dashboard(sid, f"achievement_unlocked:{key}", "system")
                 log_message(sid, 'system', f"Achievement unlocked: {key}")
         except Exception:
@@ -406,7 +397,7 @@ def get_user_stats(sid):
     user = get_user(sid)
     return f"Stats for {user['name']}:\n- Level: {user['level']}\n- XP: {user['xp']}\n- Streak: {streak} days\n- Messages sent: {total_msgs}"
 
-def get_leaderboard():
+def get_leaderboard_text():
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT name, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 10')
@@ -414,6 +405,14 @@ def get_leaderboard():
     conn.close()
     board = "\n".join([f"{i+1}. {r[0]} (Lvl {r[1]} - {r[2]} XP)" for i, r in enumerate(rows)])
     return "🏆 Top Learners:\n" + board
+
+def get_leaderboard_json():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT session_id, name, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 50')
+    rows = c.fetchall()
+    conn.close()
+    return [{'session_id': r[0], 'name': r[1], 'level': r[2], 'xp': r[3], 'achievements': [a['title'] for a in get_user_achievements(r[0])]} for r in rows]
 
 # ---------------- INACTIVE USERS ----------------
 @app.route('/remind_inactive', methods=['GET'])
@@ -429,15 +428,13 @@ def remind_inactive():
 
 @app.route('/cleanup_inactive', methods=['POST'])
 def cleanup_inactive():
-    # Admin-protected: require ADMIN_KEY in header or query param
     provided = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
     if provided != ADMIN_KEY:
         return jsonify({'error': 'unauthorized'}), 401
-    days_limit = int(request.json.get('days', 30))
+    days_limit = int((request.json or {}).get('days', 30))
     threshold = (datetime.utcnow() - timedelta(days=days_limit)).isoformat()
     conn = get_db_connection()
     c = conn.cursor()
-    # delete messages, progress, user_achievements, and user record
     c.execute('SELECT session_id FROM users WHERE last_seen < ?', (threshold,))
     old_users = [r[0] for r in c.fetchall()]
     for sid in old_users:
@@ -486,7 +483,7 @@ def message():
         elif cmd == '/stats':
             return jsonify({'reply': get_user_stats(sid)})
         elif cmd == '/leaderboard':
-            return jsonify({'reply': get_leaderboard()})
+            return jsonify({'reply': get_leaderboard_text()})
         elif cmd == '/achievements':
             ach = get_user_achievements(sid)
             if not ach:
@@ -504,16 +501,14 @@ def message():
             conn.close()
             return jsonify({'reply': "Your progress has been reset."})
 
-    # Normal messages
+    # Normal messages -> detect tasks or reply
     task_id, task_key = detect_task_from_message(text)
     if task_id:
         success, msg = run_dashboard_task(task_id)
         if success:
-            # scale XP by task difficulty (simple heuristic: quiz=40, video=30, article=20)
             difficulty_lookup = {1: 30, 2: 40, 3: 20}
             base = difficulty_lookup.get(task_id, 25)
             add_xp(sid, base, reason=f"task:{task_key}")
-            # mark progress (simple)
             conn = get_db_connection()
             c = conn.cursor()
             c.execute('INSERT INTO progress (session_id, task_name, progress, last_updated) VALUES (?,?,?,?)',
@@ -524,20 +519,18 @@ def message():
         else:
             reply = f"There was an issue starting {task_key.title()}: {msg}"
     else:
-        # casual interaction earns small XP
         add_xp(sid, 10, reason="message_interaction")
         reply = ai_reply(text, user_name) if USE_AI else choose_template_and_fill(user_name)
 
     log_message(sid, 'bot', reply)
     return jsonify({'reply': reply, 'timestamp': datetime.utcnow().isoformat()})
 
-# ---------------- ROOT ----------------
+# ---------------- ROOT & ADMIN ----------------
 @app.route('/')
 def home():
     sid = get_session_id()
     return jsonify({'message': 'Evolve Bot V5 active', 'session': sid})
 
-# ---------------- ADMIN: quick user list ----------------
 @app.route('/users', methods=['GET'])
 def list_users():
     provided = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
@@ -550,6 +543,21 @@ def list_users():
     conn.close()
     return jsonify([{'session_id': r[0], 'name': r[1], 'xp': r[2], 'level': r[3], 'last_seen': r[4]} for r in rows])
 
+@app.route('/leaderboard_json', methods=['GET'])
+def leaderboard_json():
+    # simple JSON leaderboard for dashboard to pull
+    board = get_leaderboard_json()
+    return jsonify(board)
+
+# ---------------- UTILITY: quick health ----------------
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok', 'time': datetime.utcnow().isoformat()})
+
 # ---------------- MAIN ----------------
 if __name__ == '__main__':
+    # ensure DB exists/seeded
+    init_db()
+    seed_achievements()
+    print("Evolve Bot V5 running at: http://127.0.0.1:5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
