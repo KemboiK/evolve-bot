@@ -1,12 +1,12 @@
 """
-Evolve Dashboard (Flask) - V4 Synced
+Evolve Dashboard (Flask) - V5 Synced
 -------------------------------------
-Enhanced dashboard synced with Evolve Learning Bot.
+Enhanced dashboard synced with Evolve Learning Bot V5.
 - Simulates interactive tasks
 - Displays rotating motivational quotes
 - Dynamic leaderboard with XP rewards
 - Daily reward system
-- Achievement popups
+- Achievement popups + placeholders for backend sync
 """
 
 from flask import Flask, jsonify, render_template_string
@@ -48,7 +48,7 @@ PAGE_TEMPLATE = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Evolve Dashboard V4</title>
+    <title>Evolve Dashboard V5</title>
     <style>
         body { background: #0d1117; color: #e6edf3; font-family: Arial, sans-serif; padding: 25px; }
         h1 { color: #00d084; }
@@ -61,11 +61,12 @@ PAGE_TEMPLATE = """
         a { color: #58a6ff; text-decoration: none; }
         .daily-reward { background: #0a3622; color: #00ffb3; padding: 10px; border-radius: 8px; margin-top: 25px; }
         .reward-btn { background: #00ffb3; color: #0d1117; padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        .achievement { background: #111; color: #ffd700; padding: 8px; border-radius: 8px; margin-top: 10px; display: inline-block; }
+        .achievement { background: #111; color: #ffd700; padding: 6px 10px; border-radius: 8px; margin: 5px; display: inline-block; font-size: 0.9em; }
+        li { margin-bottom: 10px; }
     </style>
 </head>
 <body>
-    <h1>🚀 Evolve Dashboard V4</h1>
+    <h1>🚀 Evolve Dashboard V5</h1>
     <p>Select a task below to simulate learning progress.</p>
 
     {% for t in tasks %}
@@ -156,11 +157,14 @@ def run_task(task_id):
     quote = random.choice(QUOTES)
     msg = f"✅ {task['title']} completed successfully!"
 
-    # Give XP + check for new achievements
+    # Simulate XP + achievements
     user = random.choice(LEADERBOARD)
     gained = random.randint(10, 25)
     user["xp"] += gained
-    if user["xp"] > 500 and "Level Master" not in user["achievements"]:
+    user["level"] = 1 + user["xp"] // 100
+
+    # Unlock achievements
+    if user["xp"] >= 500 and "Level Master" not in user["achievements"]:
         user["achievements"].append("Level Master")
     if len(user["achievements"]) >= 3 and "Elite Learner" not in user["achievements"]:
         user["achievements"].append("Elite Learner")
@@ -172,7 +176,8 @@ def claim_reward():
     lucky_user = random.choice(LEADERBOARD)
     bonus = 20
     lucky_user["xp"] += bonus
-    if bonus >= 20 and "Daily Dedication" not in lucky_user["achievements"]:
+    lucky_user["level"] = 1 + lucky_user["xp"] // 100
+    if "Daily Dedication" not in lucky_user["achievements"]:
         lucky_user["achievements"].append("Daily Dedication")
     return jsonify({"message": f"{lucky_user['name']} claimed {bonus} bonus XP!"})
 
@@ -181,8 +186,17 @@ def get_leaderboard():
     sorted_board = sorted(LEADERBOARD, key=lambda x: (-x['level'], -x['xp']))
     return jsonify(sorted_board)
 
+# Placeholder sync routes for future API link to evolve.py backend
+@app.route("/sync_leaderboard")
+def sync_leaderboard():
+    return jsonify({"status": "ok", "message": "Leaderboard sync endpoint ready."})
+
+@app.route("/sync_achievements")
+def sync_achievements():
+    return jsonify({"status": "ok", "message": "Achievements sync endpoint ready."})
+
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
-    print("Evolve Dashboard V4 synced running at: http://127.0.0.1:5001")
+    print("Evolve Dashboard V5 synced running at: http://127.0.0.1:5001")
     app.run(port=5001, debug=True)
