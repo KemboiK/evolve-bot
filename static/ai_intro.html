@@ -2,13 +2,51 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>AI Intro Video</title>
+    <title>AI Intro Video | Evolve Learning</title>
     <style>
-        body { background: #111; color: #eee; font-family: Arial, sans-serif; padding: 30px; text-align: center; line-height: 1.6; }
-        h1 { color: #0f9; margin-bottom: 15px; }
-        p { margin-bottom: 20px; }
-        video { width: 100%; max-width: 720px; border-radius: 10px; box-shadow: 0 0 15px #0f9; }
-        a { color: #00d084; text-decoration: none; font-weight: bold; }
+        body {
+            background: #111;
+            color: #eee;
+            font-family: Arial, sans-serif;
+            padding: 30px;
+            text-align: center;
+        }
+        h1 { color: #0f9; }
+        video {
+            width: 100%;
+            max-width: 720px;
+            border-radius: 10px;
+            margin-top: 20px;
+            box-shadow: 0 0 20px #0f9;
+        }
+        button {
+            background: #0f9;
+            color: #111;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            margin-top: 25px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        button:hover { background: #0c6; }
+        .takeaways, .reflect {
+            background: #222;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 30px auto;
+            max-width: 720px;
+            text-align: left;
+            box-shadow: 0 0 10px #0f9;
+        }
+        .takeaways h2 { color: #0f9; margin-bottom: 10px; }
+        .takeaways ul { padding-left: 20px; }
+        a {
+            color: #0f9;
+            text-decoration: none;
+            font-weight: bold;
+        }
         a:hover { text-decoration: underline; }
     </style>
 </head>
@@ -16,11 +54,42 @@
     <h1>🤖 Introduction to Artificial Intelligence</h1>
     <p>Learn how AI systems think, reason, and evolve — from machine learning to neural networks.</p>
 
-    <video controls>
+    <video id="aiVideo" controls>
         <source src="ai_intro.mp4" type="video/mp4">
         Your browser does not support the video tag.
     </video>
 
-    <p>Once finished, return to your <a href="/">Evolve Dashboard</a> to continue your learning journey!</p>
+    <button id="completeBtn" onclick="markComplete()"> Mark as Completed</button>
+
+    <div class="takeaways">
+        <h2>Key Takeaways</h2>
+        <ul>
+            <li>AI mimics human reasoning through algorithms and data.</li>
+            <li>Machine Learning is a subset of AI focused on recognizing patterns and improving through experience.</li>
+            <li>Neural Networks are the backbone of deep learning systems powering modern AI breakthroughs.</li>
+        </ul>
+    </div>
+
+    <p>🎯 Ready to test your understanding? Try the <a href="ai_quiz.html">AI Quick Quiz</a>!</p>
+
+    <div class="reflect">
+        <p><b>💭 Reflection:</b> In your own words, how does AI learn from data? 
+        Write your answer below to reinforce your understanding.</p>
+        <textarea id="reflection" rows="4" style="width:100%; border-radius:8px; padding:10px; background:#111; color:#eee; border:1px solid #0f9;"></textarea>
+    </div>
+
+    <script>
+        // Save progress
+        function markComplete() {
+            localStorage.setItem("ai_intro_complete", "true");
+            alert("🎉 Great job! You’ve completed AI Intro. Returning to dashboard...");
+            window.location.href = "/";
+        }
+
+        // Video end recommendation
+        document.getElementById("aiVideo").addEventListener("ended", () => {
+            alert(" Well done! Next up: Explore Machine Learning Fundamentals.");
+        });
+    </script>
 </body>
 </html>
