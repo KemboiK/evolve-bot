@@ -1,39 +1,43 @@
-# evolve-bot
+# Rugike Motors AI Support Bot
 
 ## Overview
-Evolve Bot is a lightweight conversational AI created with Flask. It’s designed to simulate natural, human-like conversations while remaining simple, fast, and safe. The bot can:
+The Rugike Motors AI Support Bot is a lightweight, AI-powered conversational assistant built with Flask. It is designed to provide automated, real-time customer support to both buyers and sellers on the Rugike Motors platform. The bot can:
 
-- Handle incoming messages and generate replies  
-- Verify user age and filter inappropriate content  
-- Store conversations in an SQLite database  
-- Connect with AI models (like OpenAI) for smarter responses  
-- Run locally or deploy easily on Render, Fly.io or Railway  
+- Handle incoming customer and seller inquiries  
+- Understand and respond to common questions using NLP  
+- Filter inappropriate or unsafe content  
+- Track conversations and store them in an SQLite database  
+- Integrate with AI models for smarter responses  
+- Provide an extendable framework for future automation  
 
 ---
 
 ## Functionality
-When started, Evolve Bot listens on port **5000** and responds to essential endpoints such as:  
-- `/` to check if it’s active  
-- `/verify_age` to confirm users are 18+  
-- `/message` to send and receive replies  
-- `/admin/messages` to review stored chats  
+Once deployed, the AI Support Bot listens on port **5000** and supports key endpoints:  
 
-The `.env` file holds your **secret keys**, **database path**, and optional **API key**. Once configured, it runs with a single command and is instantly ready for use.
+- `/` – Check if the bot is running  
+- `/message` – Send and receive customer or seller messages  
+- `/admin/messages` – Review stored conversations for moderation  
+- `/verify_user` – Optional endpoint to verify user identity or role  
+
+The `.env` file holds secret keys, database paths, and optional AI API keys. The bot runs locally or can be deployed to cloud platforms such as Render, Fly.io, or Railway.
 
 ---
 
-## Design 
-Evolve Bot was built with clarity, simplicity, and safety in mind.  
-- Ensures users are adults before interaction  
-- Filters unsafe, illegal, or explicit content  
-- Produces warm, fluent and engaging replies  
-- Adapts to various roles from companion to customer service bot  
+## Design Principles
+The bot is built to be **safe, responsive and adaptable**:
 
-It’s a framework that evolves with your creativity flexible enough for fun or professional use.
+- Ensures safe interactions by filtering offensive or illegal content  
+- Provides warm, professional, and helpful responses  
+- Learns over time to improve response accuracy  
+- Can be customized for different business workflows  
+
+This creates a foundation for a flexible AI assistant suitable for both customer service and internal support tasks.
 
 ---
 
 ## Setup
+Follow these steps to get started:
 Setup takes only a few minutes:
 1. Install Flask and dotenv  
 2. Create your `.env` file with the required variables  
