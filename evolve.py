@@ -1,24 +1,21 @@
 """
-Evolve Learning Bot (Flask) - V5
---------------------------------
-Enhanced conversational learning assistant.
-New in V5:
-- Achievements system (badges) stored in DB and synced to dashboard
-- Motivational quotes and /quote command
-- Smart XP scaling based on streaks and difficulty
-- Admin-only /cleanup_inactive route to prune long-inactive users
-- Event log sync for achievements and level-ups
-- New command: /achievements
-- Minor UX improvements and safer admin protection via ADMIN_KEY env var
+Rugike Motors Support Bot (Flask) 
+--------------------------------------------------------------
+Purpose: AI-powered customer & seller support assistant for Rugike Motors.
+- Handles buyer and seller inquiries
+- Lightweight intent detection + FAQ KB
+- Logs conversations and creates escalation tickets
+- Optional OpenAI fallback (if OPENAI_API_KEY present)
+- Syncs events to dashboard via DASHBOARD_URL
 """
 
-from flask import Flask, request, jsonify, session, render_template_string
-import re
+from flask import Flask, request, jsonify, session
 import os
-import random
 import sqlite3
+import re
+import random
 import requests
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # ---------------- INIT ----------------
@@ -26,86 +23,86 @@ load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('BOT_SECRET_KEY', 'replace-with-secure-secret')
-DB_PATH = os.environ.get('BOT_DB', 'evolve_bot.db')
-DASHBOARD_URL = os.environ.get('DASHBOARD_URL', 'http://127.0.0.1:5001')
-USE_AI = os.getenv("USE_AI", "false").lower() == "true"
-ADMIN_KEY = os.environ.get('ADMIN_KEY', 'admin-secret-key')  # provide via env for admin endpoints
 
-# Optional OpenAI integration; safe fallback if not installed or key not set
+DB_PATH = os.environ.get('BOT_DB', 'rugike_support.db')
+DASHBOARD_URL = os.environ.get('DASHBOARD_URL', 'http://127.0.0.1:5001')
+ADMIN_KEY = os.environ.get('ADMIN_KEY', 'admin-secret-key')
+USE_AI = bool(os.getenv('OPENAI_API_KEY'))
+
+# optional OpenAI import
 try:
-    import openai
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    if OPENAI_API_KEY:
-        openai.api_key = OPENAI_API_KEY
-    else:
-        USE_AI = False
+    if USE_AI:
+        import openai
+        openai.api_key = os.getenv('OPENAI_API_KEY')
 except Exception:
     USE_AI = False
 
 # ---------------- DB SETUP ----------------
-def init_db():
+def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db_connection()
     c = conn.cursor()
+    # messages: chat log
     c.execute('''CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
                     role TEXT,
                     content TEXT,
                     created_at TEXT
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS progress (
-                    id INTEGER PRIMARY KEY,
-                    session_id TEXT,
-                    task_name TEXT,
-                    progress INTEGER DEFAULT 0,
-                    last_updated TEXT
-                )''')
+                 )''')
+    # users: basic profile (session-based)
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                     session_id TEXT PRIMARY KEY,
                     name TEXT,
-                    xp INTEGER DEFAULT 0,
-                    level INTEGER DEFAULT 1,
-                    focus_area TEXT,
+                    email TEXT,
                     last_seen TEXT
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS achievements (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key TEXT UNIQUE,
-                    title TEXT,
-                    description TEXT
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS user_achievements (
+                 )''')
+    # tickets: escalations / support tickets
+    c.execute('''CREATE TABLE IF NOT EXISTS tickets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT,
-                    achievement_key TEXT,
-                    unlocked_at TEXT,
-                    UNIQUE(session_id, achievement_key)
-                )''')
+                    subject TEXT,
+                    description TEXT,
+                    status TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                 )''')
+    # knowledge base: simple local KB of FAQs
+    c.execute('''CREATE TABLE IF NOT EXISTS kb (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question TEXT,
+                    answer TEXT,
+                    tags TEXT
+                 )''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# ---------------- ACHIEVEMENTS SETUP ----------------
-ACHIEVEMENT_DEFINITIONS = {
-    "first_xp": ("First Steps", "Earn your first XP."),
-    "level_5": ("Rising Star", "Reach level 5."),
-    "streak_7": ("Weekly Streak", "Study 7 days in a row."),
-    "first_task": ("Task Complete", "Complete your first learning task."),
-    "century_xp": ("100 XP Club", "Accumulate 100 total XP.")
-}
-
-def seed_achievements():
-    conn = sqlite3.connect(DB_PATH)
+# seed KB if empty
+def seed_kb():
+    conn = get_db_connection()
     c = conn.cursor()
-    for key, (title, desc) in ACHIEVEMENT_DEFINITIONS.items():
-        c.execute('INSERT OR IGNORE INTO achievements (key, title, description) VALUES (?,?,?)', (key, title, desc))
-    conn.commit()
+    c.execute('SELECT COUNT(*) FROM kb')
+    if c.fetchone()[0] == 0:
+        kb_items = [
+            ("How do I list a car for sale?", "Go to Sellers > Add Listing and fill required fields (make, model, year, price, photos). We review listings within 24 hours.", "listing,sellers"),
+            ("How do I contact a seller?", "Open the car listing and click 'Contact Seller' — you can send a message or request a call.", "contact,transactions"),
+            ("What are seller requirements?", "Sellers must verify ID and provide vehicle ownership documents. Check Seller Policy page for full details.", "sellers,policy,verification"),
+            ("How do I pay for a car?", "We currently support bank transfer and escrow payments. Follow checkout steps on the listing or contact support.", "payments,checkout"),
+            ("How do I report a problem with a listing?", "Use 'Report Listing' on the car detail page or message our support through the chat to open a ticket.", "report,listing,issues")
+        ]
+        c.executemany('INSERT INTO kb (question, answer, tags) VALUES (?,?,?)', kb_items)
+        conn.commit()
     conn.close()
 
-seed_achievements()
+seed_kb()
 
-# ---------------- HELPERS ----------------
+# ---------------- SESSIONS ----------------
 def get_session_id():
     sid = session.get('sid')
     if not sid:
@@ -113,451 +110,306 @@ def get_session_id():
         session['sid'] = sid
     return sid
 
-def get_db_connection():
-    return sqlite3.connect(DB_PATH)
-
-def get_user(sid):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT name, xp, level, focus_area, last_seen FROM users WHERE session_id=?', (sid,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return {'name': row[0], 'xp': row[1], 'level': row[2], 'focus': row[3], 'last_seen': row[4]}
-    return None
-
-def save_user(sid, name="Learner", focus=None):
+def save_user_profile(sid, name=None, email=None):
     now = datetime.utcnow().isoformat()
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO users (session_id, name, focus_area, last_seen) VALUES (?,?,?,?)',
-              (sid, name, focus, now))
+    c.execute('INSERT OR IGNORE INTO users (session_id, name, email, last_seen) VALUES (?,?,?,?)', (sid, name, email, now))
     c.execute('UPDATE users SET last_seen=? WHERE session_id=?', (now, sid))
     conn.commit()
     conn.close()
 
 # ---------------- MODERATION ----------------
-ILLEGAL_PATTERNS = [r"\bchild\b", r"\bunderage\b"]
-PROHIBITED_PATTERNS = [r"\bkill\b", r"\bterror\b", r"\bexplosive\b"]
-
+PROHIBITED_PATTERNS = [r"\bterror\b", r"\bexplosive\b", r"\bkill\b"]
 def moderate_text(text):
     lowered = text.lower()
-    for p in ILLEGAL_PATTERNS:
-        if re.search(p, lowered):
-            return False, 'content referencing minors detected'
     for p in PROHIBITED_PATTERNS:
         if re.search(p, lowered):
-            return False, 'potentially violent/illegal content detected'
-    return True, ''
+            return False, "Potentially violent or illegal content detected."
+    return True, ""
 
-# ---------------- TASK MAP ----------------
-TASK_MAP = {"ai intro": 1, "python basics": 2, "data science": 3}
+# ---------------- SIMPLE INTENT DETECTION ----------------
+INTENTS = {
+    'availability': ['available', 'is .* available', 'still available', 'is it available'],
+    'post_listing': ['list a car', 'sell my car', 'post listing', 'how to sell'],
+    'contact_seller': ['contact seller', 'message seller', 'call seller', 'reach seller'],
+    'pricing': ['price', 'cost', 'how much', 'asking price'],
+    'payment': ['pay', 'payment', 'checkout', 'escrow', 'bank transfer'],
+    'report_issue': ['report', 'fraud', 'scam', 'problem with listing', 'not working'],
+    'hours': ['opening hours', 'hours', 'when are you open'],
+    'help': ['help', 'support', 'customer service', 'questions']
+}
 
-def detect_task_from_message(text):
-    text = text.lower()
-    for key, tid in TASK_MAP.items():
-        if key in text:
-            return tid, key
-    return None, None
+def detect_intent(text):
+    text_l = text.lower()
+    # direct keyword mapping
+    for intent, patterns in INTENTS.items():
+        for p in patterns:
+            try:
+                if re.search(p, text_l):
+                    return intent
+            except re.error:
+                if p in text_l:
+                    return intent
+    # fallback heuristics
+    if '?' in text:
+        return 'help'
+    return 'unknown'
 
-def run_dashboard_task(task_id):
-    try:
-        res = requests.get(f"{DASHBOARD_URL}/run_task/{task_id}", timeout=5)
-        if res.status_code == 200:
-            return True, res.json().get("message", "Task done.")
-        return False, "Dashboard error."
-    except Exception as e:
-        return False, str(e)
+# ---------------- KB SEARCH ----------------
+def search_kb(query, limit=3):
+    conn = get_db_connection()
+    c = conn.cursor()
+    q = f"%{query.lower()}%"
+    c.execute('SELECT question,answer FROM kb WHERE LOWER(question) LIKE ? OR LOWER(tags) LIKE ? LIMIT ?', (q, q, limit))
+    rows = c.fetchall()
+    conn.close()
+    return [{"question": r[0], "answer": r[1]} for r in rows]
 
-# ---------------- AI / TEMPLATE ----------------
-REPLY_TEMPLATES = [
-    "Hey {{name}}, what would you like to learn today?",
-    "Welcome back {{name}}! Ready to level up your skills?",
-    "Hi {{name}}, you can try AI Intro, Python Basics or Data Science.",
-    "Good to see you again {{name}}! What topic would you like to study today?",
-]
-
-def choose_template_and_fill(name):
-    return render_template_string(random.choice(REPLY_TEMPLATES), name=name)
-
-def ai_reply(user_message, name='Learner'):
+# ---------------- AI FALLBACK ----------------
+def ai_fallback(user_message, context=None):
+    """
+    If OpenAI key is present, use it as a fallback.
+    Keep prompts concise and safe.
+    """
     if not USE_AI:
-        return choose_template_and_fill(name)
+        # simple polite fallback
+        return ("Sorry — I couldn't find an exact answer. "
+                "You can ask to contact support or type 'escalate' to open a ticket.")
     try:
+        prompt = f"You are a helpful support assistant for an online car marketplace called Rugike Motors.\nUser: {user_message}\nAnswer concisely and professionally, include steps or ask to escalate if needed."
         res = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful educational assistant named Evolve Bot."},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=300
+            messages=[{"role": "system", "content": "You are Rugike Motors customer support assistant."},
+                      {"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.2
         )
-        return res.choices[0].message.content
-    except Exception as e:
-        return f"(AI unavailable: {e})"
+        return res.choices[0].message.content.strip()
+    except Exception:
+        return ("Sorry — I'm temporarily unable to fetch an AI answer. "
+                "Please type 'escalate' to open a support ticket or try again later.")
 
-# ---------------- QUOTES ----------------
-QUOTES = [
-    "Learning never exhausts the mind. — Leonardo da Vinci",
-    "Success is the sum of small efforts repeated day in and day out. — Robert Collier",
-    "Never stop learning, because life never stops teaching.",
-    "Education is the most powerful weapon you can use to change the world. — Nelson Mandela",
-    "Curiosity is the wick in the candle of learning. — William Arthur Ward"
-]
-
-# ---------------- LOGGING & STREAK ----------------
-def log_message(sid, role, content):
+# ---------------- LOGGING & DASHBOARD SYNC ----------------
+def log_message(session_id, role, content):
+    now = datetime.utcnow().isoformat()
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('INSERT INTO messages (session_id, role, content, created_at) VALUES (?,?,?,?)',
-              (sid, role, content, datetime.utcnow().isoformat()))
+              (session_id, role, content, now))
     conn.commit()
     conn.close()
-    send_to_dashboard(sid, content, role)
-
-def send_to_dashboard(sid, text, role):
+    # send a lightweight event to the dashboard for analytics (non-blocking)
     try:
-        payload = {'sid': sid, 'text': text, 'role': role}
-        requests.post(f"{DASHBOARD_URL}/log_message", json=payload, timeout=2)
+        payload = {'sid': session_id, 'role': role, 'content': content}
+        requests.post(f"{DASHBOARD_URL}/log_message", json=payload, timeout=1.5)
     except Exception:
         pass
 
-def calculate_streak(sid):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT DISTINCT DATE(created_at) FROM messages WHERE session_id=? AND role="user"', (sid,))
-    rows = c.fetchall()
-    conn.close()
-    days = sorted([r[0] for r in rows])
-    if not days:
-        return 0
-    streak = 1
-    # handle single-day case
-    if len(days) == 1:
-        return 1
-    for i in range(len(days)-1, 0, -1):
-        try:
-            d_cur = datetime.fromisoformat(days[i])
-            d_prev = datetime.fromisoformat(days[i-1])
-        except Exception:
-            # fallback if format not exactly YYYY-MM-DD
-            d_cur = datetime.strptime(days[i][:10], "%Y-%m-%d")
-            d_prev = datetime.strptime(days[i-1][:10], "%Y-%m-%d")
-        if (d_cur - d_prev).days == 1:
-            streak += 1
-        else:
-            break
-    return streak
-
-# ---------------- SMART XP & ACHIEVEMENTS ----------------
-def add_xp(sid, amount, reason=""):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT xp, level FROM users WHERE session_id=?', (sid,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return
-    xp, level = row
-    streak = calculate_streak(sid)
-    streak_multiplier = 1.0 + min(streak * 0.10, 0.50)  # up to +50%
-    gained = int(amount * streak_multiplier)
-    xp += gained
-
-    level_ups = 0
-    while xp >= level * 100:
-        xp -= level * 100
-        level += 1
-        level_ups += 1
-
+# ---------------- TICKET MANAGEMENT ----------------
+def create_ticket(session_id, subject, description):
     now = datetime.utcnow().isoformat()
-    c.execute('UPDATE users SET xp=?, level=?, last_seen=? WHERE session_id=?', (xp, level, now, sid))
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('INSERT INTO tickets (session_id, subject, description, status, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+              (session_id, subject, description, 'open', now, now))
+    ticket_id = c.lastrowid
     conn.commit()
     conn.close()
+    # notify dashboard
+    try:
+        requests.post(f"{DASHBOARD_URL}/log_message", json={'sid': session_id, 'role': 'system', 'content': f"ticket_created:{ticket_id}"}, timeout=1.5)
+    except Exception:
+        pass
+    return ticket_id
 
-    event_text = f"XP +{gained} ({amount} base, streak x{streak_multiplier:.2f})"
-    if reason:
-        event_text += f" - {reason}"
-    log_message(sid, 'system', event_text)
-
-    if level_ups > 0:
-        send_to_dashboard(sid, f"level_up:{level}", "system")
-    check_and_unlock_achievements(sid)
-
-def get_total_xp_for_user(sid):
+def list_tickets(limit=100):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT xp, level FROM users WHERE session_id=?', (sid,))
-    row = c.fetchone()
+    c.execute('SELECT id, session_id, subject, status, created_at FROM tickets ORDER BY created_at DESC LIMIT ?', (limit,))
+    rows = c.fetchall()
     conn.close()
-    if not row:
-        return 0
-    xp, level = row
-    total = xp + sum(i * 100 for i in range(1, level))
-    return total
+    return [dict(r) for r in rows]
 
-def check_and_unlock_achievements(sid):
-    user = get_user(sid)
-    if not user:
-        return []
-    unlocked = []
-    total_xp = get_total_xp_for_user(sid)
-    streak = calculate_streak(sid)
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    rules = [
-        ("first_xp", lambda u: total_xp >= 1),
-        ("century_xp", lambda u: total_xp >= 100),
-        ("level_5", lambda u: u['level'] >= 5),
-        ("streak_7", lambda u: streak >= 7),
+# ---------------- RESPONSE TEMPLATES & KB ----------------
+RESPONSES = {
+    'availability': [
+        "If you'd like I can check the listing status — please provide the listing ID or the car make/model.",
+        "I can look that up. Share the listing ID or the car details (make, model, year)."
+    ],
+    'post_listing': [
+        "To post a car, go to Sellers > Add Listing and complete the form. Need a step-by-step guide?",
+        "I can walk you through creating a listing now — would you like to start?"
+    ],
+    'contact_seller': [
+        "Open the listing and click 'Contact Seller' to send a message. Want me to draft a message for you?",
+        "You can message the seller directly from the listing page. If you'd like, give me a short note and I will format it."
+    ],
+    'pricing': [
+        "Listing prices depend on year, mileage, and condition. Do you want an estimated price range? Share make/model/year.",
+        "I can provide pricing guidance if you share the car details or listing ID."
+    ],
+    'payment': [
+        "We support bank transfers and escrow payments. For high-value purchases consider using our escrow service.",
+        "Payment options: bank transfer, escrow. We don't handle cash delivery — let me know which you prefer."
+    ],
+    'report_issue': [
+        "I'm sorry to hear that. I can open a support ticket for this — please give a short description of the problem.",
+        "I can report the listing and escalate this to our trust team. Do you want me to open a ticket?"
+    ],
+    'hours': [
+        "Our customer support is available Mon-Fri 9:00-17:00 local time. For urgent matters, type 'escalate'."
+    ],
+    'help': [
+        "I can help with listings, payments, contacting sellers, and reporting issues. What would you like to do?",
+        "Tell me what you need (e.g., 'Sell my car', 'Contact seller', 'Report listing', 'Payment options')."
+    ],
+    'unknown': [
+        "I didn't quite get that. Could you rephrase or provide the listing ID or car details?",
+        "I can help with listings, payments, contacting sellers, or escalate to a human. Type 'escalate' to open a ticket."
     ]
+}
 
-    c.execute('SELECT COUNT(*) FROM progress WHERE session_id=?', (sid,))
-    progress_count = c.fetchone()[0]
-    if progress_count > 0:
-        rules.append(("first_task", lambda u: True))
-
-    for key, rule in rules:
-        try:
-            c.execute('SELECT 1 FROM user_achievements WHERE session_id=? AND achievement_key=?', (sid, key))
-            if c.fetchone():
-                continue
-            if rule(user):
-                now = datetime.utcnow().isoformat()
-                c.execute('INSERT OR IGNORE INTO user_achievements (session_id, achievement_key, unlocked_at) VALUES (?,?,?)',
-                          (sid, key, now))
-                conn.commit()
-                unlocked.append(key)
-                send_to_dashboard(sid, f"achievement_unlocked:{key}", "system")
-                log_message(sid, 'system', f"Achievement unlocked: {key}")
-        except Exception:
-            continue
-    conn.close()
-    return unlocked
-
-def get_user_achievements(sid):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT achievement_key, unlocked_at FROM user_achievements WHERE session_id=?', (sid,))
-    rows = c.fetchall()
-    conn.close()
-    result = []
-    for key, at in rows:
-        title = ACHIEVEMENT_DEFINITIONS.get(key, (key, ""))[0]
-        result.append({'key': key, 'title': title, 'unlocked_at': at})
-    return result
-
-# ---------------- DAILY CHALLENGE ----------------
-DAILY_QUESTIONS = [
-    ("What is a variable in programming?", "store"),
-    ("What does HTML stand for?", "hypertext"),
-    ("What is the purpose of machine learning?", "predic"),
-]
-
-def get_daily_question():
-    today = date.today().toordinal() % len(DAILY_QUESTIONS)
-    return DAILY_QUESTIONS[today]
-
-@app.route('/daily', methods=['GET'])
-def daily_question():
-    sid = get_session_id()
-    q, _ = get_daily_question()
-    return jsonify({'question': q})
-
-@app.route('/answer', methods=['POST'])
-def answer_question():
-    sid = get_session_id()
-    user_answer = (request.json or {}).get('answer', '').strip().lower()
-    _, correct = get_daily_question()
-    if correct in user_answer:
-        add_xp(sid, 25, reason="daily_challenge_correct")
-        return jsonify({'result': 'Correct! You earned +25 XP.'})
-    else:
-        return jsonify({'result': 'Incorrect. Try again tomorrow.'})
-
-# ---------------- FOCUS MODE ----------------
-FOCUS_MODE = {}
-
-@app.route('/focus', methods=['POST'])
-def toggle_focus():
-    sid = get_session_id()
-    FOCUS_MODE[sid] = not FOCUS_MODE.get(sid, False)
-    state = "enabled" if FOCUS_MODE[sid] else "disabled"
-    return jsonify({'reply': f"Focus mode {state}."})
-
-# ---------------- COMMAND UTILITIES ----------------
-def get_user_stats(sid):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM messages WHERE session_id=? AND role="user"', (sid,))
-    total_msgs = c.fetchone()[0]
-    conn.close()
-    streak = calculate_streak(sid)
-    user = get_user(sid)
-    return f"Stats for {user['name']}:\n- Level: {user['level']}\n- XP: {user['xp']}\n- Streak: {streak} days\n- Messages sent: {total_msgs}"
-
-def get_leaderboard_text():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT name, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 10')
-    rows = c.fetchall()
-    conn.close()
-    board = "\n".join([f"{i+1}. {r[0]} (Lvl {r[1]} - {r[2]} XP)" for i, r in enumerate(rows)])
-    return "🏆 Top Learners:\n" + board
-
-def get_leaderboard_json():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT session_id, name, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 50')
-    rows = c.fetchall()
-    conn.close()
-    return [{'session_id': r[0], 'name': r[1], 'level': r[2], 'xp': r[3], 'achievements': [a['title'] for a in get_user_achievements(r[0])]} for r in rows]
-
-# ---------------- INACTIVE USERS ----------------
-@app.route('/remind_inactive', methods=['GET'])
-def remind_inactive():
-    days_limit = int(request.args.get('days', 3))
-    conn = get_db_connection()
-    c = conn.cursor()
-    threshold = (datetime.utcnow() - timedelta(days=days_limit)).isoformat()
-    c.execute('SELECT session_id, name, last_seen FROM users WHERE last_seen < ?', (threshold,))
-    inactive = c.fetchall()
-    conn.close()
-    return jsonify({'inactive_users': [{'session_id': s, 'name': n, 'last_seen': l} for s, n, l in inactive]})
-
-@app.route('/cleanup_inactive', methods=['POST'])
-def cleanup_inactive():
-    provided = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
-    if provided != ADMIN_KEY:
-        return jsonify({'error': 'unauthorized'}), 401
-    days_limit = int((request.json or {}).get('days', 30))
-    threshold = (datetime.utcnow() - timedelta(days=days_limit)).isoformat()
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT session_id FROM users WHERE last_seen < ?', (threshold,))
-    old_users = [r[0] for r in c.fetchall()]
-    for sid in old_users:
-        c.execute('DELETE FROM messages WHERE session_id=?', (sid,))
-        c.execute('DELETE FROM progress WHERE session_id=?', (sid,))
-        c.execute('DELETE FROM user_achievements WHERE session_id=?', (sid,))
-        c.execute('DELETE FROM users WHERE session_id=?', (sid,))
-    conn.commit()
-    conn.close()
-    return jsonify({'deleted_users': len(old_users)})
-
-# ---------------- MESSAGE HANDLER ----------------
+# ---------------- MAIN CHAT ENDPOINT ----------------
 @app.route('/message', methods=['POST'])
 def message():
     data = request.json or {}
     text = (data.get('text') or '').strip()
-    user_name = data.get('name', 'Learner')
+    name = data.get('name')  # optional
+    email = data.get('email')  # optional
     sid = get_session_id()
 
     if not text:
         return jsonify({'error': 'empty_message'}), 400
 
-    save_user(sid, user_name)
-    ok, reason = moderate_text(text)
+    # record user profile
+    save_user_profile(sid, name=name, email=email)
+    # moderation
+    ok, reason = moderate_text(text), ""
+    if isinstance(ok, tuple):
+        ok, reason = ok
     if not ok:
         return jsonify({'error': reason}), 403
 
-    # Focus mode
-    if FOCUS_MODE.get(sid):
-        if not detect_task_from_message(text)[0]:
-            return jsonify({'reply': "You're in focus mode. Discuss tasks only or use /focus to exit."})
+    log_message(sid, 'user', text)
 
-    # Commands
-    if text.startswith('/'):
-        cmd = text.lower()
-        user = get_user(sid)
-        if cmd == '/help':
-            return jsonify({'reply': "Available commands: /help, /xp, /level, /streak, /reset, /stats, /leaderboard, /achievements, /quote"})
-        elif cmd == '/xp':
-            return jsonify({'reply': f"You have {user['xp']} XP."})
-        elif cmd == '/level':
-            return jsonify({'reply': f"You are at level {user['level']}."})
-        elif cmd == '/streak':
-            streak = calculate_streak(sid)
-            return jsonify({'reply': f"You have a {streak}-day learning streak."})
-        elif cmd == '/stats':
-            return jsonify({'reply': get_user_stats(sid)})
-        elif cmd == '/leaderboard':
-            return jsonify({'reply': get_leaderboard_text()})
-        elif cmd == '/achievements':
-            ach = get_user_achievements(sid)
-            if not ach:
-                return jsonify({'reply': "No achievements unlocked yet. Keep learning!"})
-            lines = [f"- {a['title']} (unlocked at {a['unlocked_at']})" for a in ach]
-            return jsonify({'reply': "Your achievements:\n" + "\n".join(lines)})
-        elif cmd == '/quote':
-            return jsonify({'reply': random.choice(QUOTES)})
-        elif cmd == '/reset':
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute('DELETE FROM progress WHERE session_id=?', (sid,))
-            c.execute('UPDATE users SET xp=0, level=1 WHERE session_id=?', (sid,))
-            conn.commit()
-            conn.close()
-            return jsonify({'reply': "Your progress has been reset."})
+    # quick command: escalate
+    if text.lower().strip() in ('escalate', 'open ticket', 'human', 'agent'):
+        ticket_id = create_ticket(sid, 'User requested escalation', text)
+        reply = f"An escalation ticket (#{ticket_id}) has been created. Our team will reach out soon."
+        log_message(sid, 'bot', reply)
+        return jsonify({'reply': reply, 'ticket_id': ticket_id})
 
-    # Normal messages -> detect tasks or reply
-    task_id, task_key = detect_task_from_message(text)
-    if task_id:
-        success, msg = run_dashboard_task(task_id)
-        if success:
-            difficulty_lookup = {1: 30, 2: 40, 3: 20}
-            base = difficulty_lookup.get(task_id, 25)
-            add_xp(sid, base, reason=f"task:{task_key}")
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute('INSERT INTO progress (session_id, task_name, progress, last_updated) VALUES (?,?,?,?)',
-                      (sid, task_key, 100, datetime.utcnow().isoformat()))
-            conn.commit()
-            conn.close()
-            reply = f"Task {task_key.title()} completed. {msg}"
-        else:
-            reply = f"There was an issue starting {task_key.title()}: {msg}"
-    else:
-        add_xp(sid, 10, reason="message_interaction")
-        reply = ai_reply(text, user_name) if USE_AI else choose_template_and_fill(user_name)
+    # detect intent
+    intent = detect_intent(text)
+    # try knowledge base hits first
+    kb_hits = search_kb(text)
+    if kb_hits:
+        # return most relevant KB answer + offer next actions
+        answer = kb_hits[0]['answer']
+        reply = f"{answer}\n\nIf that doesn't help, reply 'escalate' to open a ticket or type 'contact' to reach a human."
+        log_message(sid, 'bot', reply)
+        return jsonify({'reply': reply, 'source': 'kb', 'matches': kb_hits})
 
+    # mapped intent responses
+    if intent in RESPONSES:
+        reply = random.choice(RESPONSES[intent])
+        # if availability or pricing ask for details
+        if intent in ('availability', 'pricing'):
+            # prompt for listing ID
+            reply += " If you have the listing ID (e.g., #1234), paste it here and I'll check."
+        log_message(sid, 'bot', reply)
+        return jsonify({'reply': reply, 'intent': intent})
+
+    # fallback to AI or unknown response
+    if USE_AI:
+        ai_answer = ai_fallback(text)
+        log_message(sid, 'bot', ai_answer)
+        return jsonify({'reply': ai_answer, 'source': 'ai'})
+
+    # generic unknown
+    reply = random.choice(RESPONSES['unknown'])
     log_message(sid, 'bot', reply)
-    return jsonify({'reply': reply, 'timestamp': datetime.utcnow().isoformat()})
+    return jsonify({'reply': reply, 'intent': 'unknown'})
 
-# ---------------- ROOT & ADMIN ----------------
-@app.route('/')
-def home():
-    sid = get_session_id()
-    return jsonify({'message': 'Evolve Bot V5 active', 'session': sid})
+# ---------------- HISTORY ----------------
+@app.route('/history', methods=['GET'])
+def history():
+    sid = request.args.get('sid') or get_session_id()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT role, content, created_at FROM messages WHERE session_id=? ORDER BY created_at ASC', (sid,))
+    rows = c.fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
+# ---------------- ESCALATE (manual) ----------------
+@app.route('/escalate', methods=['POST'])
+def escalate():
+    data = request.json or {}
+    sid = data.get('sid') or get_session_id()
+    subject = data.get('subject', 'User escalation request')
+    description = data.get('description', '')
+    ticket_id = create_ticket(sid, subject, description)
+    return jsonify({'ticket_id': ticket_id, 'message': 'Ticket created'})
+
+# ---------------- TICKETS (admin) ----------------
+@app.route('/tickets', methods=['GET'])
+def tickets():
+    key = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
+    if key != ADMIN_KEY:
+        return jsonify({'error': 'unauthorized'}), 401
+    t = list_tickets()
+    return jsonify(t)
+
+# ---------------- KB SEARCH ----------------
+@app.route('/kb', methods=['GET'])
+def kb_search():
+    q = request.args.get('q', '')
+    if not q:
+        return jsonify({'error': 'no_query'}), 400
+    hits = search_kb(q)
+    return jsonify(hits)
+
+# ---------------- USERS (admin) ----------------
 @app.route('/users', methods=['GET'])
-def list_users():
-    provided = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
-    if provided != ADMIN_KEY:
+def users():
+    key = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
+    if key != ADMIN_KEY:
         return jsonify({'error': 'unauthorized'}), 401
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT session_id, name, xp, level, last_seen FROM users ORDER BY last_seen DESC')
+    c.execute('SELECT session_id, name, email, last_seen FROM users ORDER BY last_seen DESC LIMIT 200')
     rows = c.fetchall()
     conn.close()
-    return jsonify([{'session_id': r[0], 'name': r[1], 'xp': r[2], 'level': r[3], 'last_seen': r[4]} for r in rows])
+    return jsonify([dict(r) for r in rows])
 
-@app.route('/leaderboard_json', methods=['GET'])
-def leaderboard_json():
-    # simple JSON leaderboard for dashboard to pull
-    board = get_leaderboard_json()
-    return jsonify(board)
-
-# ---------------- UTILITY: quick health ----------------
+# ---------------- HEALTH ----------------
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'time': datetime.utcnow().isoformat()})
+    return jsonify({'status': 'ok', 'time': datetime.utcnow().isoformat(), 'ai_enabled': USE_AI})
 
-# ---------------- MAIN ----------------
-if __name__ == '__main__':
-    # ensure DB exists/seeded
+# ---------------- SIMPLE ADMIN: add KB item ----------------
+@app.route('/admin/kb/add', methods=['POST'])
+def add_kb():
+    key = request.headers.get('X-ADMIN-KEY') or request.args.get('admin_key')
+    if key != ADMIN_KEY:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.json or {}
+    q = data.get('question')
+    a = data.get('answer')
+    tags = data.get('tags', '')
+    if not q or not a:
+        return jsonify({'error': 'missing_fields'}), 400
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('INSERT INTO kb (question, answer, tags) VALUES (?,?,?)', (q, a, tags))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'added'})
+
+# ---------------- BOOT ----------------
+if __name__ == "__main__":
     init_db()
-    seed_achievements()
-    print("Evolve Bot V5 running at: http://127.0.0.1:5000")
+    seed_kb()
     app.run(host='0.0.0.0', port=5000, debug=True)
